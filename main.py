@@ -1,16 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-Created on Sat Apr 30 12:34:56 2022
 Author: JHM
-Date: 2022-04-30
+Date: 2022-05-08
 Description: 预测TE的21种故障
 """
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
 import numpy as np
-from Model_ConvLSTM import ConvLSTM
-from Data_Process import DataProcess
+from CreatData import creatData
 
 
 class MyDataset(Dataset):
@@ -27,63 +26,72 @@ class MyDataset(Dataset):
         return input, target
 
 
-class ConvLSTMModel(nn.Module):
-    def __init__(self):
-        super(ConvLSTMModel, self).__init__()
-        self.conv_lstm = ConvLSTM(input_dim=1,
-                                  hidden_dim=[64, 32],
-                                  kernel_size=(3, 3),
-                                  num_layers=2,
-                                  batch_first=True,
-                                  bias=True,
-                                  return_all_layers=False)
-        self.linear = nn.Linear(32, 1)
+class GCNLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim, num_layers):
+        super(GCNLSTM, self).__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.gcn_layers = nn.ModuleList([GCN(input_dim, hidden_dim) if i == 0 else GCN(hidden_dim, hidden_dim) for i in range(num_layers)])
+        self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
+        self.fc = nn.Linear(hidden_dim, 1)
 
-    def forward(self, x):
-        output, _ = self.conv_lstm(x)
-        output = output[-1][0]  # 只保留最后一个时间步的输出
-        output = self.linear(output.view(-1, 32))
-        return output
+    def forward(self, x, adj):
+        adj = adj.unsqueeze(0)  # 在第0个位置插入一个新的维度
+        for i in range(self.num_layers):
+            x = self.gcn_layers[i](x, adj)
+            x = F.relu(x)
+        lstm_out, _ = self.lstm(x)
+        out = self.fc(lstm_out[:, -1, :])
+        return out
+
+
+class GCN(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super(GCN, self).__init__()
+        self.fc = nn.Linear(input_dim, output_dim)
+
+    def forward(self, x, adj):
+        x = torch.matmul(adj, x)
+        x = self.fc(x)
+        return x
 
 
 if __name__ == '__main__':
 
     # 参数初始化
     batch_size = 100
-    time_step = 10
-    chanel = 1
-    width = 7
-    height = 7
-    n_epoch = 1
+    num_feature = 10
+    num_epoch = 2
 
     # 数据处理
-    processor = DataProcess(time_step, chanel, width, height)
-    processor.dat_to_csv()
-    processor.creat_data()
+    cd = creatData(time_step=num_feature)
+    cd.process()
 
     # 创建自定义数据集
-    Train_X = torch.from_numpy(np.load(r'TE_Data/Train_X.npy'))
-    Train_y = torch.from_numpy(np.load(r'TE_Data/Train_y.npy'))
-    train_set = MyDataset(Train_X, Train_y)
+    adj = torch.tensor(np.load('adj_matrix.npy')).to(torch.float32)
+    X = torch.from_numpy(np.load(r'TE_Data_1/Train_X.npy'))
+    y = torch.from_numpy(np.load(r'TE_Data_1/Train_y.npy'))
 
     # 创建数据加载器
+    train_set = MyDataset(X, y)
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 
     # 实例化模型
-    model = ConvLSTMModel()
+    model = GCNLSTM(input_dim=num_feature, hidden_dim=64, num_layers=2)
 
     # 编译和训练模型
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters())
-    for epoch in range(n_epoch):
+    criterion = nn.MSELoss()  # 损失函数
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # 定义优化器
+    for epoch in range(num_epoch):
         batch = 1
         for input, target in train_loader:
-            output = model(input)
-            loss = criterion(output, target)
             optimizer.zero_grad()
+            output = model(input, adj)
+            loss = criterion(output, target)
             loss.backward()
             optimizer.step()
-            print('Epoch [{}/{}], Batch [{}], Loss: {:.4f}'.format(epoch+1, n_epoch, batch, loss.item()))
+            print('Epoch [{}/{}], Batch [{}], Loss: {:.4f}'.format(epoch+1, num_epoch, batch, loss.item()))
             batch += 1
 
     # 保存模型
