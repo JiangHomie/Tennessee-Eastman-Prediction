@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Author: JHM
-Date: 2022-05-08
+Date: 2022-05-18
 Description: 创建数据集
 """
 import numpy as np
@@ -27,6 +27,7 @@ class creatData():
 
     def __init__(self, time_step):
         self.time_step = time_step
+        self.num_fault = 22  # 正常情况 + 21种故障情况
 
     def sliding_window(self, arr, target):
         """
@@ -38,7 +39,9 @@ class creatData():
         Xs, ys = [], []
         for i in range(arr.shape[0] - self.time_step + 1):
             Xs.append(arr[i:i + self.time_step, :].T)
-            ys.append(int(target))
+            y = [0] * self.num_fault
+            y[int(target)] = 1
+            ys.append(y)
         return Xs, ys
 
     def process(self):
@@ -48,6 +51,7 @@ class creatData():
         """
         if {'Test_X.npy', 'Test_y.npy', 'Train_X.npy', 'Train_y.npy'}.issubset(set(os.listdir(r'TE_Data_1'))):
             # 判断 set1 是否为 set2 的子集
+            print('数据集构建完毕')
             return
 
         for csv_dir in [r'TE_Data_1/Train', r'TE_Data_1/Test']:
@@ -59,6 +63,7 @@ class creatData():
                 Xs_2, ys_2 = self.sliding_window(data[160:, :], int(csv_name[1:3]))     # 引入故障后
                 X_all += (Xs_1 + Xs_2)
                 y_all += (ys_1 + ys_2)
+                break
 
             save_path = r'TE_Data_1/%s_X.npy' % csv_dir.split('/')[1]
             if not os.path.exists(save_path):
@@ -79,3 +84,4 @@ if __name__ == '__main__':
     X_te = np.load(r'TE_Data_1/Test_X.npy')
     y_te = np.load(r'TE_Data_1/Test_y.npy')
     print('Train_X', X.shape, 'Train_y', y.shape, 'Test_X', X_te.shape, 'Test_y', y_te.shape)
+    # Train_X (10184, 22, 10) Train_y (10184, 22) Test_X (20724, 22, 10) Test_y (20724, 22)
