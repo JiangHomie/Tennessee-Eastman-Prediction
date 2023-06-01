@@ -1,15 +1,14 @@
 # -*- coding: utf-8 -*-
 """
 Author: JHM
-Date: 2022-05-18
+Date: 2023-06-02
 Description: 预测模型的测试
 """
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
 import numpy as np
-from CreatData import creatData
-from main import GCNLSTM, MyDataset
+from Proj_1.CreatData import creatData
+from Proj_1.main import GCNLSTM, MyDataset
 
 
 if __name__ == '__main__':
@@ -27,8 +26,8 @@ if __name__ == '__main__':
 
     # 创建Test数据集
     adj = torch.tensor(np.load('adj_matrix.npy')).to(torch.float32)
-    X = torch.from_numpy(np.load(r'TE_Data_1/Test_X.npy'))
-    y = torch.from_numpy(np.load(r'TE_Data_1/Test_y.npy'))
+    X = torch.from_numpy(np.load(r'Test_X.npy'))
+    y = torch.from_numpy(np.load(r'Test_y.npy'))
 
     # 创建数据加载器
     test_set = MyDataset(X, y)
@@ -40,18 +39,23 @@ if __name__ == '__main__':
     model.eval()  # 设置模型为评估模式
 
     # 对测试数据进行预测
+    num_1 = 0  # 正确预测类别的数量
+    num_2 = 0  # 正确预测有无故障的数量
     with torch.no_grad():
         for inputs, targets in test_loader:
             test_outputs = model(inputs, adj)
-            criterion = nn.MSELoss()
-            test_loss = criterion(test_outputs, targets)
-            print('Test loss:', test_loss.item())
-
             # 将输出转换为one-hot编码
             predicted_labels = torch.argmax(test_outputs, dim=1)
             one_hot_labels = torch.zeros_like(test_outputs)
             one_hot_labels.scatter_(1, predicted_labels.unsqueeze(1), 1)
-            print(one_hot_labels)
-            print(targets)
+            fault_pred = torch.argmax(one_hot_labels).item()
+            fault_true = torch.argmax(targets).item()
+            # 记录预测结果
+            if fault_pred != fault_true:
+                num_1 += 1
+            if (fault_pred * fault_true != 0) or (fault_pred + fault_true == 0):
+                num_2 += 1
 
-            # break
+    print('ACC: {:.4f}'.format(num_1 / len(test_loader)))
+    print('FDR: {:.4f}'.format(num_2 / len(test_loader)))
+

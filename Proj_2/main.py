@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Author: JHM
-Date: 2022-05-18
+Date: 2023-06-01
 Description: 预测TE的21种故障
 """
 import torch
@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 import torch.nn.functional as F
 import numpy as np
-from CreatData import creatData
+from Proj_1.CreatData import creatData
 
 
 class MyDataset(Dataset):
@@ -53,6 +53,12 @@ class GCN(nn.Module):
         self.fc = nn.Linear(input_dim, output_dim)
 
     def forward(self, x, adj):
+        """
+        x, adj 从输入到输出shape不发生变化
+        :param x: torch.Size([batch_size, num_fault, num_feature])
+        :param adj: torch.Size([1, num_fault, num_fault])
+        :return:
+        """
         x = torch.matmul(adj, x)
         x = self.fc(x)
         return x
@@ -65,8 +71,8 @@ if __name__ == '__main__':
     num_feature = 10    # 节点的输入特征维度
     num_hidden = 64     # LSTM隐藏层维度
     num_layers = 2      # GCN的层数
-    num_fault = 22      # 输出类别数
-    num_epoch = 20
+    out_dim = 1         # 输出类别数
+    num_epoch = 10
 
     # 数据处理
     cd = creatData(time_step=num_feature)
@@ -74,21 +80,20 @@ if __name__ == '__main__':
 
     # 创建Train数据集
     adj = torch.tensor(np.load('adj_matrix.npy')).to(torch.float32)
-    X = torch.from_numpy(np.load(r'TE_Data_1/Train_X.npy'))
-    y = torch.from_numpy(np.load(r'TE_Data_1/Train_y.npy'))
+    Xs = torch.from_numpy(np.load(r'Train_X.npy'))
+    ys = torch.from_numpy(np.load(r'Train_y.npy'))
 
     # 创建数据加载器
-    train_set = MyDataset(X, y)
+    train_set = MyDataset(Xs, ys)
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 
     # 实例化模型，定义损失函数和优化器
-    model = GCNLSTM(input_dim=num_feature, hidden_dim=num_hidden, output_dim=num_fault, num_layers=num_layers)
+    model = GCNLSTM(input_dim=num_feature, hidden_dim=num_hidden, output_dim=out_dim, num_layers=num_layers)
     criterion = nn.MSELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
 
     # 创建TensorboardX的summary writer
     writer = SummaryWriter()
-
     for epoch in range(num_epoch):
         loss = None
         for i, (input, target) in enumerate(train_loader):
@@ -104,12 +109,15 @@ if __name__ == '__main__':
 
         if not (epoch + 1) % 10:
             writer.add_scalar('Train Loss', loss, epoch + 1)  # 记录训练损失到Tensorboard
-        # writer.flush()  # 实时显示
+            # 保存参数权重的变化
+            for name, param in model.named_parameters():
+                if 'weight' in name:
+                    image = np.expand_dims(param.data.clone().numpy(), axis=0)  # 添加通道维度
+                    writer.add_image('%s' % name, image, epoch + 1)
 
-    # 关闭TensorboardX的summary writer
-    writer.close()
-    # 保存模型
-    torch.save(model.state_dict(), 'TE_Model.pt')
+        # writer.flush()  # 实时显示
+    writer.close()  # 关闭TensorboardX的summary writer
+    torch.save(model.state_dict(), 'TE_Model.pt')  # 保存模型
 
 """
 训练损失写入到Tensorboard。默认情况下，这些数据会保存在当前目录下的runs文件夹中。
