@@ -68,11 +68,12 @@ if __name__ == '__main__':
 
     # 参数初始化
     batch_size = 100
-    num_feature = 10    # 节点的输入特征维度
+    num_feature = 20    # 节点的输入特征维度
     num_hidden = 64     # LSTM隐藏层维度
     num_layers = 2      # GCN的层数
     num_fault = 22      # 输出类别数
-    num_epoch = 10
+    num_epoch = 50
+    lr = 0.001         # 学习率
 
     # 数据处理
     cd = creatData(time_step=num_feature)
@@ -89,8 +90,11 @@ if __name__ == '__main__':
 
     # 实例化模型，定义损失函数和优化器
     model = GCNLSTM(input_dim=num_feature, hidden_dim=num_hidden, output_dim=num_fault, num_layers=num_layers)
-    criterion = nn.MSELoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+    # 定义类别权重向量
+    class_weights = torch.ones(num_fault) * 10
+    class_weights[0] = 1
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # 创建TensorboardX的summary writer
     writer = SummaryWriter()
@@ -99,17 +103,21 @@ if __name__ == '__main__':
         for i, (input, target) in enumerate(train_loader):
             # 前向传播
             output = model(input, adj)
-            loss = criterion(output, target)
+            output_pred = nn.functional.softmax(output, dim=1)
+            _, labels = torch.max(target, 1)
+            loss = criterion(output_pred, labels)
             # 反向传播和优化
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             # 每个batch打印一次损失
             print('Epoch [{}/{}], Batch [{}/{}], Loss: {:.4f}'.format(epoch+1, num_epoch, i+1, len(train_loader), loss.item()))
-
-        if not (epoch + 1) % 10:
             # 记录训练损失到Tensorboard
-            writer.add_scalar('Train Loss', loss, epoch + 1)
+            writer.add_scalar('Train Loss (batch)', loss, epoch*len(train_loader)+i)
+
+        # 记录训练损失到Tensorboard
+        writer.add_scalar('Train Loss (epoch)', loss, epoch + 1)
+        if not (epoch + 1) % 10:
             # 保存参数权重的变化
             for name, param in model.named_parameters():
                 if 'weight' in name:
