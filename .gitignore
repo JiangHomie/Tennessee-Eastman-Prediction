@@ -1,4 +1,9 @@
 .DS_Store
+Proj_1/Test
+Proj_1/Train
+Proj_1/checkpoints
+Proj_1/runs
+.idea
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -10,6 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 from tensorboardX import SummaryWriter
 import torch.nn.functional as F
 import numpy as np
+import os
 from Proj_1.CreatData import creatData
 
 
@@ -27,24 +28,60 @@ class MyDataset(Dataset):
         return input, target
 
 
+class MyTrainDataset(Dataset):
+    def __init__(self, root_path='./Train'):
+        self.root_path = root_path
+        self.file_list = os.listdir(self.root_path)
+        self.file_list.sort()
+        input_list = []
+        target_list = []
+        for file_name in self.file_list[40:42]:
+            if 'data' in file_name:
+                data = np.load(os.path.join(self.root_path, file_name))
+                input_list.append(data)
+            elif 'label' in file_name:
+                label = np.load(os.path.join(self.root_path, file_name))
+                target_list.append(label)
+        self.inputs = np.concatenate(input_list, axis=0)
+        self.targets = np.concatenate(target_list, axis=0)
+
+    def __len__(self):
+        return self.inputs.shape[0]
+
+    def __getitem__(self, idx):
+        input = torch.tensor(self.inputs[idx])
+        target = torch.tensor(self.targets[idx])
+        return input, target
+
+
 class GCNLSTM(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim, num_layers):
         super(GCNLSTM, self).__init__()
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.gcn_layers = nn.ModuleList([GCN(input_dim, hidden_dim) if i == 0 else GCN(hidden_dim, hidden_dim) for i in range(num_layers)])
+        self.gcn = GCN(input_dim=input_dim, output_dim=hidden_dim)
+        self.fc = nn.Linear(input_dim, hidden_dim)
         self.lstm = nn.LSTM(input_size=hidden_dim, hidden_size=hidden_dim, num_layers=num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        self.classifier_cls = nn.Linear(hidden_dim, output_dim)
+        self.classifier_abnorm = nn.Linear(hidden_dim, 2)
+
+    def pre_process(self, x):
+        mean = torch.mean(x, dim=1, keepdim=True)
+        std = torch.std(x, dim=1, keepdim=True)
+        normalized_x = (x - mean) / std
+        return normalized_x
 
     def forward(self, x, adj):
         adj = adj.unsqueeze(0)  # 在第0个位置插入一个新的维度
-        for i in range(self.num_layers):
-            x = self.gcn_layers[i](x, adj)
-            x = F.relu(x)
-        lstm_out, _ = self.lstm(x)
-        out = self.fc(lstm_out[:, -1, :])
-        return out
+        x = self.pre_process(x)
+        x_gcn = self.gcn(x, adj)
+        x_fc = self.fc(x)
+        x_fc = F.relu(x_fc)
+        lstm_out, _ = self.lstm(x_gcn)
+        out_abnorm = self.classifier_abnorm(x_fc)
+        out_cls = self.classifier_cls((x_fc+lstm_out)*out_abnorm[:, :, 1:])
+        return out_cls, out_abnorm
 
 
 class GCN(nn.Module):
@@ -55,11 +92,11 @@ class GCN(nn.Module):
     def forward(self, x, adj):
         """
         x, adj 从输入到输出shape不发生变化
-        :param x: torch.Size([batch_size, num_fault, num_feature])
+        :param x: torch.Size([batch_size, seq_length, num_feature])
         :param adj: torch.Size([1, num_fault, num_fault])
         :return:
         """
-        x = torch.matmul(adj, x)
+        x = torch.bmm(x, adj.expand(1000, -1, -1))
         x = self.fc(x)
         return x
 
@@ -67,33 +104,30 @@ class GCN(nn.Module):
 if __name__ == '__main__':
 
     # 参数初始化
-    batch_size = 100
-    num_feature = 20    # 节点的输入特征维度
+    batch_size = 10
+    num_feature = 22    # 节点的输入特征维度
     num_hidden = 64     # LSTM隐藏层维度
     num_layers = 2      # GCN的层数
     num_fault = 22      # 输出类别数
-    num_epoch = 50
-    lr = 0.001         # 学习率
+    num_epoch = 5
+    lr = 0.0001         # 学习率
 
     # 数据处理
-    cd = creatData(time_step=num_feature)
-    cd.process()
+    # cd = creatData()
+    # cd.process()
 
     # 创建Train数据集
     adj = torch.tensor(np.load('adj_matrix.npy')).to(torch.float32)
-    Xs = torch.from_numpy(np.load(r'Train_X.npy'))
-    ys = torch.from_numpy(np.load(r'Train_y.npy'))
-
-    # 创建数据加载器
-    train_set = MyDataset(Xs, ys)
-    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
+    train_set = MyTrainDataset()
+    train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False)
 
     # 实例化模型，定义损失函数和优化器
     model = GCNLSTM(input_dim=num_feature, hidden_dim=num_hidden, output_dim=num_fault, num_layers=num_layers)
     # 定义类别权重向量
-    class_weights = torch.ones(num_fault) * 10
+    class_weights = torch.ones(num_fault) * 2
     class_weights[0] = 1
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    criterion_cls = nn.CrossEntropyLoss(weight=class_weights)
+    criterion_abnorm = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # 创建TensorboardX的summary writer
@@ -102,31 +136,53 @@ if __name__ == '__main__':
         loss = None
         for i, (input, target) in enumerate(train_loader):
             # 前向传播
-            output = model(input, adj)
-            output_pred = nn.functional.softmax(output, dim=1)
-            _, labels = torch.max(target, 1)
-            loss = criterion(output_pred, labels)
+            output_cls, output_abnorm = model(input, adj)
+
+            # 故障类别的损失函数
+            output_cls_pred = nn.functional.softmax(output_cls, dim=2)
+            labels_cls = target.squeeze().long()
+            loss_cls = criterion_cls(output_cls_pred.transpose(1, 2), labels_cls)
+
+            # 故障预测的损失函数
+            output_abnorm_pred = nn.functional.softmax(output_abnorm, dim=2)
+            labels_abnorm = torch.where(labels_cls != 0, torch.tensor(1), labels_cls)
+            loss_abnorm = criterion_abnorm(output_cls_pred.transpose(1, 2), labels_abnorm)
+
+            # 计算预测准确率
+            predicted = torch.argmax(output_cls_pred, dim=2)
+            print('cls prediction')
+            print(predicted[0, :])
+            accuracy_cls = torch.eq(predicted, labels_cls).float().mean()
+
+            predicted = torch.argmax(output_abnorm_pred, dim=2)
+            print('abnorm prediction')
+            print(predicted[0, :])
+            accuracy_abnorm = torch.eq(predicted, labels_abnorm).float().mean()
+
             # 反向传播和优化
             optimizer.zero_grad()
-            loss.backward()
+            loss_total = loss_cls + loss_abnorm
+            # loss_total = loss_cls
+            loss_total.backward()
             optimizer.step()
             # 每个batch打印一次损失
-            print('Epoch [{}/{}], Batch [{}/{}], Loss: {:.4f}'.format(epoch+1, num_epoch, i+1, len(train_loader), loss.item()))
+            print('Epoch [{}/{}], Batch [{}/{}], Loss: {:.4f}, Accuracy: cls: {:.4f} abnorm: {:.4f}'.format(epoch+1, num_epoch, i+1, len(train_loader),
+                                                                                        loss_total.item(), accuracy_cls.item(), accuracy_abnorm.item()))
             # 记录训练损失到Tensorboard
-            writer.add_scalar('Train Loss (batch)', loss, epoch*len(train_loader)+i)
+            writer.add_scalar('Train Loss (batch)', loss_total, epoch * len(train_loader)+i)
+            writer.add_scalar('Class Accuracy (batch)', accuracy_cls, epoch * len(train_loader) + i)
+            writer.add_scalar('Abnorm Accuracy (batch)', accuracy_abnorm, epoch * len(train_loader) + i)
 
         # 记录训练损失到Tensorboard
-        writer.add_scalar('Train Loss (epoch)', loss, epoch + 1)
-        if not (epoch + 1) % 10:
-            # 保存参数权重的变化
-            for name, param in model.named_parameters():
-                if 'weight' in name:
-                    image = np.expand_dims(param.data.clone().numpy(), axis=0)  # 添加通道维度
-                    writer.add_image('%s' % name, image, epoch + 1)
+        writer.add_scalar('Train Loss (epoch)', loss_total, epoch + 1)
+        for name, param in model.named_parameters():
+            if 'weight' in name:
+                image = np.expand_dims(param.data.clone().numpy(), axis=0)  # 添加通道维度
+                writer.add_image('%s' % name, image, epoch + 1)
 
         # writer.flush()  # 实时显示
     writer.close()  # 关闭TensorboardX的summary writer
-    torch.save(model.state_dict(), 'TE_Model.pt')  # 保存模型
+    torch.save(model.state_dict(), './checkpoints/TE_Model_21.pt')  # 保存模型
 
 
 """
