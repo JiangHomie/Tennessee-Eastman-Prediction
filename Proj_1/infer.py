@@ -39,7 +39,7 @@ class MyTestDataset(Dataset):
 
 if __name__ == '__main__':
 
-    # 参数初始化
+    # 参数初始化1372475723@qq.com
     batch_size = 1
     num_feature = 22    # 节点的输入特征维度
     num_hidden = 64     # LSTM隐藏层维度
@@ -79,11 +79,18 @@ if __name__ == '__main__':
             # 计算预测准确率
             labels_cls = target.squeeze().long()
             predicted = torch.argmax(output_cls_pred, dim=2)
-            print('cls prediction')
-            print(predicted[0, :])
+            print('故障{}: cls prediction'.format(i+1))
             accuracy_cls = torch.eq(predicted, labels_cls).float().mean()
-            print(accuracy_cls)
+            print('accuracy: ', accuracy_cls)
             acc_list.append(accuracy_cls.item())
+
+            # 计数错误判断故障的个数
+            predicted_numpy = predicted.numpy()
+            unique_elements, counts = np.unique(predicted_numpy, return_counts=True)
+            element_counts = list(zip(unique_elements, counts))
+            # 输出每个元素和出现的次数
+            for element, count in element_counts:
+                print("元素:", element, "，出现次数:", count)
 
     print('ACC: {:.4f}'.format(np.mean(acc_list)))
     # print('FDR: {:.4f}'.format(num_2 / len(test_loader)))

@@ -13,6 +13,11 @@ import numpy as np
 import os
 from Proj_1.CreatData import creatData
 
+MODEL_NAMES = ('TE_Model_01', 'TE_Model_02', 'TE_Model_03', 'TE_Model_04', 'TE_Model_05',
+               'TE_Model_06', 'TE_Model_07', 'TE_Model_08', 'TE_Model_09', 'TE_Model_10',
+               'TE_Model_11', 'TE_Model_12', 'TE_Model_13', 'TE_Model_14', 'TE_Model_15',
+               'TE_Model_16', 'TE_Model_17', 'TE_Model_18', 'TE_Model_19', 'TE_Model_20',
+               'TE_Model_21')
 
 class MyDataset(Dataset):
     def __init__(self, inputs, targets):
@@ -29,13 +34,14 @@ class MyDataset(Dataset):
 
 
 class MyTrainDataset(Dataset):
-    def __init__(self, root_path='./Train'):
+    def __init__(self, root_path='./Train', model_name=None):
         self.root_path = root_path
         self.file_list = os.listdir(self.root_path)
         self.file_list.sort()
         input_list = []
         target_list = []
-        for file_name in self.file_list[40:42]:
+        index = MODEL_NAMES.index(model_name)
+        for file_name in self.file_list[index*2:(index+1)*2]:
             if 'data' in file_name:
                 data = np.load(os.path.join(self.root_path, file_name))
                 input_list.append(data)
@@ -96,7 +102,10 @@ class GCN(nn.Module):
         :param adj: torch.Size([1, num_fault, num_fault])
         :return:
         """
-        x = torch.bmm(x, adj.expand(1000, -1, -1))
+        if self.training:
+            x = torch.bmm(x, adj.expand(10, -1, -1))
+        else:
+            x = torch.bmm(x, adj.expand(1000, -1, -1))
         x = self.fc(x)
         return x
 
@@ -111,6 +120,7 @@ if __name__ == '__main__':
     num_fault = 22      # 输出类别数
     num_epoch = 5
     lr = 0.0001         # 学习率
+    model_name = 'TE_Model_01'  # 模型名称
 
     # 数据处理
     # cd = creatData()
@@ -118,7 +128,7 @@ if __name__ == '__main__':
 
     # 创建Train数据集
     adj = torch.tensor(np.load('adj_matrix.npy')).to(torch.float32)
-    train_set = MyTrainDataset()
+    train_set = MyTrainDataset(model_name=model_name)
     train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=False)
 
     # 实例化模型，定义损失函数和优化器
@@ -131,7 +141,7 @@ if __name__ == '__main__':
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     # 创建TensorboardX的summary writer
-    writer = SummaryWriter()
+    writer = SummaryWriter(comment=model_name, filename_suffix=model_name)
     for epoch in range(num_epoch):
         loss = None
         for i, (input, target) in enumerate(train_loader):
@@ -176,13 +186,19 @@ if __name__ == '__main__':
         # 记录训练损失到Tensorboard
         writer.add_scalar('Train Loss (epoch)', loss_total, epoch + 1)
         for name, param in model.named_parameters():
-            if 'weight' in name:
+            if name == 'gcn.fc.weight':
+                gcn_weight = param.data.clone().numpy()
+                agg_gcn_weight = np.sum(gcn_weight, axis=0, keepdims=True)
+                agg_gcn_weight = agg_gcn_weight / np.sum(agg_gcn_weight, axis=1, keepdims=True)
+                image = np.expand_dims(agg_gcn_weight, axis=0)  # 添加通道维度
+                writer.add_image('%s' % name, image, epoch + 1)
+            elif 'weight' in name:
                 image = np.expand_dims(param.data.clone().numpy(), axis=0)  # 添加通道维度
                 writer.add_image('%s' % name, image, epoch + 1)
 
         # writer.flush()  # 实时显示
     writer.close()  # 关闭TensorboardX的summary writer
-    torch.save(model.state_dict(), './checkpoints/TE_Model_21.pt')  # 保存模型
+    torch.save(model.state_dict(), './checkpoints/{}.pt'.format(model_name))  # 保存模型
 
 
 """
